@@ -2,8 +2,10 @@
 # run as a shell script to compile
 exec gcc $0 -o termi \
   -O3 -Wall -Werror -Wextra -Wno-unused-parameter \
+  -I/usr/include/vte-0.0 \
   -I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include \
   -I/usr/include/gtk-2.0 -I/usr/lib/gtk-2.0/include \
+  -I/usr/include/gdk-pixbuf-2.0 \
   -I/usr/include/atk-1.0 -I/usr/include/pango-1.0 -I/usr/include/cairo \
   -lvte -lgtk-x11-2.0 -lgdk-x11-2.0 -lpango-1.0 -lgobject-2.0 -lglib-2.0
 #endif
@@ -686,8 +688,14 @@ TermiTab *termi_tab_new(gchar *cmd)
   // run the command
 #if VTE_CHECK_VERSION(0,26,0)
   char *argv2[2] = { NULL, NULL };
+  char *cmd_alloc = NULL;
   if( cmd == NULL ) {
+#if VTE_CHECK_VERSION(0,28,0)
+    cmd_alloc = vte_get_user_shell();
+    cmd = cmd_alloc;
+#else
     cmd = g_getenv("SHELL");
+#endif
     if( cmd == NULL ) {
       cmd = "/bin/sh";
     }
@@ -699,6 +707,7 @@ TermiTab *termi_tab_new(gchar *cmd)
       VTE_PTY_NO_LASTLOG|VTE_PTY_NO_UTMP|VTE_PTY_NO_WTMP|VTE_PTY_NO_HELPER,
       wdir, argv, NULL,
       G_SPAWN_CHILD_INHERITS_STDIN|G_SPAWN_SEARCH_PATH, NULL, NULL, &tab->pid, &gerror);
+  g_free(cmd_alloc);
 #else
   tab->pid = vte_terminal_fork_command(tab->vte, argv==NULL?NULL:argv[0], argv, NULL,
                                        wdir, FALSE, FALSE, FALSE);
