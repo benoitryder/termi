@@ -42,6 +42,14 @@ typedef struct {
   guint key;
 } TermiKeyBinding;
 
+
+#if VTE_CHECK_VERSION(0,26,0)
+#define TERMI_KEY_BINDINGS_FIND_APPLY(expr) \
+  expr(find,      "Find",        GDK_CONTROL_MASK|GDK_SHIFT_MASK, 'f') \
+  expr(find_next, "FindNext",    GDK_CONTROL_MASK|GDK_SHIFT_MASK, 'n') \
+  expr(find_prev, "FindPrev",    GDK_CONTROL_MASK|GDK_SHIFT_MASK, 'p')
+#endif
+
 /// Apply code on all configurable key bindings.
 #define TERMI_KEY_BINDINGS_APPLY(expr) \
   expr(new_tab,   "NewTab",      GDK_CONTROL_MASK|GDK_SHIFT_MASK, 't') \
@@ -50,6 +58,7 @@ typedef struct {
   expr(prev_tab,  "PreviousTab", GDK_CONTROL_MASK, GDK_Tab) \
   expr(copy,      "Copy",        GDK_CONTROL_MASK|GDK_SHIFT_MASK, 'c') \
   expr(paste,     "Paste",       GDK_CONTROL_MASK|GDK_SHIFT_MASK, 'v') \
+  TERMI_KEY_BINDINGS_FIND_APPLY(expr)
 
 
 /// Global data of the termi instance.
@@ -65,6 +74,9 @@ typedef struct {
   guint label_nb;            ///< Tab label number (starting at 1).
   GRegex *uri_regex;         ///< Regex object for underlined URIs.
   gchar *menu_uri;           ///< Allocated URI for the current popup menu.
+#if VTE_CHECK_VERSION(0,26,0)
+  GRegex *search_regex;        ///< Current search regex.
+#endif
 
   // configuration
   gboolean save_conf_at_exit;
@@ -75,6 +87,9 @@ typedef struct {
   gboolean blink_mode;  // note: don't support the 3-state mode, on purpose
   guint buffer_lines;
   gchar *word_chars;
+#if VTE_CHECK_VERSION(0,26,0)
+  gboolean search_wrap;
+#endif
   PangoFontDescription *vte_font;  ///< Font for terminals.
   GdkColor vte_fg_color;
   GdkColor vte_bg_color;
@@ -101,6 +116,9 @@ static TermiInstance termi = {
   .label_nb  = 1,
   .uri_regex = NULL,
   .menu_uri  = NULL,
+#if VTE_CHECK_VERSION(0,26,0)
+  .search_regex = NULL,
+#endif
 
    // binding and conf values initialized in termi_conf_load()
 };
@@ -186,6 +204,15 @@ static gchar *termi_get_cursor_uri(const TermiTab *tab, const GdkEventButton *ev
 /// Open a given URI.
 static void termi_open_uri(gchar *uri);
 
+#if VTE_CHECK_VERSION(0,26,0)
+/** @brief Show dialog to change search regex.
+ * @return TRUE if modified, FALSE otherwise.
+ */
+static gboolean termi_search_modify(void);
+/// Find next/previous string.
+static void termi_search_find(const TermiTab *tab, int way);
+#endif
+
 
 /** @name Signal callbacks.
  */
@@ -205,6 +232,9 @@ static gboolean termi_tab_button_press_event_cb(VteTerminal *, GdkEventButton *,
 static gboolean termi_tablbl_button_press_event_cb(GtkWidget *, GdkEventButton *, TermiTab *);
 static void termi_dlgcolor_cursor_toggled_cb(GtkToggleButton *, GtkWidget *);
 static void termi_dlgtitle_entry_changed_cb(GtkEntry *, GtkDialog *);
+#if VTE_CHECK_VERSION(0,26,0)
+static void termi_dlgfind_entry_changed_cb(GtkEntry *, GtkDialog *);
+#endif
 //@}
 
 /** @name Keybinding callbacks.
@@ -310,6 +340,11 @@ void termi_quit(void)
   gtk_widget_destroy(GTK_WIDGET(termi.winmain));
   g_free(termi.word_chars);
   g_regex_unref(termi.uri_regex);
+#if VTE_CHECK_VERSION(0,26,0)
+  if( termi.search_regex ) {
+    g_regex_unref(termi.search_regex);
+  }
+#endif
   if( termi.vte_font != NULL ) {
     pango_font_description_free(termi.vte_font);
   }
@@ -356,6 +391,10 @@ void termi_conf_load(void)
     termi.word_chars = g_strdup("-a-zA-Z0-9_./@~"); // default
   }
 
+#if VTE_CHECK_VERSION(0,26,0)
+  termi.search_wrap = termi_conf_load_bool(TERMI_CFGGRP_GENERAL, "SearchWrap", TRUE);
+#endif
+
   // Font
   val_s = g_key_file_get_string(termi.cfg, TERMI_CFGGRP_GENERAL, "Font", NULL);
   PangoFontDescription *vte_font = NULL; // default
@@ -393,6 +432,9 @@ void termi_conf_load(void)
     vte_terminal_set_cursor_blink_mode(vte, termi.blink_mode ? VTE_CURSOR_BLINK_ON : VTE_CURSOR_BLINK_OFF);
     vte_terminal_set_scrollback_lines(vte, termi.buffer_lines);
     vte_terminal_set_word_chars(vte, termi.word_chars);
+#if VTE_CHECK_VERSION(0,26,0)
+    vte_terminal_search_set_wrap_around(vte, termi.search_wrap);
+#endif
   }
   if( npages == 1 ) {
     gtk_notebook_set_show_tabs(termi.notebook, termi.show_single_tab);
@@ -414,6 +456,9 @@ void termi_conf_save(void)
   g_key_file_set_boolean(termi.cfg, TERMI_CFGGRP_GENERAL, "BlinkMode", termi.blink_mode);
   g_key_file_set_integer(termi.cfg, TERMI_CFGGRP_GENERAL, "BufferLines", termi.buffer_lines);
   g_key_file_set_string(termi.cfg, TERMI_CFGGRP_GENERAL, "WordChars", termi.word_chars);
+#if VTE_CHECK_VERSION(0,26,0)
+  g_key_file_set_boolean(termi.cfg, TERMI_CFGGRP_GENERAL, "SearchWrap", termi.search_wrap);
+#endif
 
   if( termi.vte_font != NULL ) {
     gchar *s = pango_font_description_to_string(termi.vte_font);
@@ -753,6 +798,9 @@ TermiTab *termi_tab_new(gchar *cmd)
   vte_terminal_set_cursor_blink_mode(tab->vte, termi.blink_mode ? VTE_CURSOR_BLINK_ON : VTE_CURSOR_BLINK_OFF);
   vte_terminal_set_scrollback_lines(tab->vte, termi.buffer_lines);
   vte_terminal_set_word_chars(tab->vte, termi.word_chars);
+#if VTE_CHECK_VERSION(0,26,0)
+  vte_terminal_search_set_wrap_around(tab->vte, termi.search_wrap);
+#endif
   vte_terminal_set_font(tab->vte, termi.vte_font);
   vte_terminal_set_color_foreground(tab->vte, &termi.vte_fg_color);
   vte_terminal_set_color_background(tab->vte, &termi.vte_bg_color);
@@ -886,6 +934,67 @@ void termi_open_uri(gchar *uri)
   }
   g_free(browser);
 }
+
+#if VTE_CHECK_VERSION(0,26,0)
+
+gboolean termi_search_modify(void)
+{
+  GtkDialog *dlg = GTK_DIALOG(gtk_dialog_new_with_buttons(
+      "Find regex", termi.winmain, GTK_DIALOG_MODAL,
+      GTK_STOCK_CANCEL, GTK_RESPONSE_REJECT,
+      GTK_STOCK_OK, GTK_RESPONSE_ACCEPT, NULL));
+  gtk_dialog_set_default_response(dlg, GTK_RESPONSE_ACCEPT);
+
+  GtkEntry *entry = GTK_ENTRY(gtk_entry_new());
+  if( termi.search_regex ) {
+    gtk_entry_set_text(entry, g_regex_get_pattern(termi.search_regex));
+  }
+  gtk_entry_set_activates_default(entry, TRUE);
+  GtkWidget *check = gtk_check_button_new_with_label("Wrap around");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(check), termi.search_wrap);
+
+  gtk_box_pack_start(GTK_BOX(dlg->vbox), GTK_WIDGET(entry), TRUE, TRUE, 5);
+  gtk_box_pack_start(GTK_BOX(dlg->vbox), check, FALSE, FALSE, 5);
+  gtk_widget_show_all(dlg->vbox);
+
+  g_signal_connect(G_OBJECT(entry), "changed", G_CALLBACK(termi_dlgfind_entry_changed_cb), dlg);
+
+  gboolean ret = gtk_dialog_run(dlg) == GTK_RESPONSE_ACCEPT;
+  if( ret ) {
+    if( termi.search_regex ) {
+      g_regex_unref(termi.search_regex);
+    }
+    termi.search_regex = NULL;
+    const gchar *txt = gtk_entry_get_text(entry);
+    if( *txt != '\0' ) {
+      // should not fail: checked in termi_dlgfind_entry_changed_cb()
+      termi.search_regex = g_regex_new(txt, 0, 0, NULL);
+    }
+    termi.search_wrap = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(check));
+
+    gint npages = gtk_notebook_get_n_pages(termi.notebook);
+    gint i;
+    for( i=0; i<npages; i++ ) {
+      TermiTab *tab = termi_tab_from_index(i);
+      vte_terminal_search_set_gregex(tab->vte, termi.search_regex);
+    }
+  }
+  gtk_widget_destroy(GTK_WIDGET(dlg));
+  return ret;
+}
+
+void termi_search_find(const TermiTab *tab, int way)
+{
+  if( way > 0 ) {
+    vte_terminal_search_find_next(tab->vte);
+  } else if( way < 0 ) {
+    vte_terminal_search_find_previous(tab->vte);
+  } else {
+    g_assert(FALSE);
+  }
+}
+
+#endif
 
 
 void termi_winmain_destroy_cb(GtkWindow *winmain, void *data)
@@ -1253,6 +1362,29 @@ void termi_dlgtitle_entry_changed_cb(GtkEntry *entry, GtkDialog *dlg)
   gtk_dialog_set_response_sensitive(dlg, GTK_RESPONSE_ACCEPT, *gtk_entry_get_text(entry) != '\0');
 }
 
+#if VTE_CHECK_VERSION(0,26,0)
+void termi_dlgfind_entry_changed_cb(GtkEntry *entry, GtkDialog *dlg)
+{
+  const gchar *txt = gtk_entry_get_text(entry);
+  gboolean sensitive = FALSE;
+  if( *txt == '\0' ) {
+    sensitive = TRUE;
+  } else {
+    GError *gerror = NULL;
+    GRegex *regex = g_regex_new(txt, 0, 0, &gerror);
+    if( gerror ) {
+      sensitive = FALSE;
+      g_error_free(gerror);
+    } else {
+      g_regex_unref(regex);
+      sensitive = TRUE;
+    }
+  }
+  gtk_dialog_set_response_sensitive(dlg, GTK_RESPONSE_ACCEPT, sensitive);
+}
+#endif
+
+
 
 void termi_kb_new_tab_cb(void)   { termi_tab_new(NULL); }
 void termi_kb_left_tab_cb(void)  { termi_tab_focus_rel(-1); }
@@ -1270,6 +1402,30 @@ void termi_kb_paste_cb(void)
   TermiTab *tab = termi_tab_from_index(gtk_notebook_get_current_page(termi.notebook));
   vte_terminal_paste_clipboard(tab->vte);
 }
+
+#if VTE_CHECK_VERSION(0,26,0)
+void termi_kb_find_cb(void)
+{
+  if( termi_search_modify() && termi.search_regex ) {
+    TermiTab *tab = termi_tab_from_index(gtk_notebook_get_current_page(termi.notebook));
+    termi_search_find(tab, +1);
+  }
+}
+void termi_kb_find_next_cb(void)
+{
+  if( termi.search_regex || (termi_search_modify() && termi.search_regex) ) {
+    TermiTab *tab = termi_tab_from_index(gtk_notebook_get_current_page(termi.notebook));
+    termi_search_find(tab, +1);
+  }
+}
+void termi_kb_find_prev_cb(void)
+{
+  if( termi.search_regex || (termi_search_modify() && termi.search_regex) ) {
+    TermiTab *tab = termi_tab_from_index(gtk_notebook_get_current_page(termi.notebook));
+    termi_search_find(tab, -1);
+  }
+}
+#endif
 
 
 TermiTab *termi_tab_from_vte(VteTerminal *vte)
