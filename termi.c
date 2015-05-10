@@ -2,12 +2,8 @@
 # run as a shell script to compile
 exec gcc $0 -o termi \
   -O3 -Wall -Werror -Wextra -Wno-unused-parameter \
-  -I/usr/include/vte-0.0 \
-  -I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include \
-  -I/usr/include/gtk-2.0 -I/usr/lib/gtk-2.0/include \
-  -I/usr/include/gdk-pixbuf-2.0 \
-  -I/usr/include/atk-1.0 -I/usr/include/pango-1.0 -I/usr/include/cairo \
-  -lvte -lgtk-x11-2.0 -lgdk-x11-2.0 -lpango-1.0 -lgobject-2.0 -lglib-2.0
+  `pkg-config --cflags --libs vte` \
+  `pkg-config --cflags --libs gdk-pixbuf-2.0`
 #endif
 
 #include <unistd.h>
