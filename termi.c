@@ -192,6 +192,8 @@ static void termi_tab_focus(TermiTab *tab);
 static void termi_tab_focus_rel(int n);
 /// Check if tab as running processes.
 static gboolean termi_tab_has_running_processes(TermiTab *tab);
+/// Set tab title
+static void termi_tab_set_title(TermiTab *tab, const gchar *title);
 
 /** @brief Get URI under the cursor, if any.
  * @return an allocated string, or NULL.
@@ -893,6 +895,12 @@ gboolean termi_tab_has_running_processes(TermiTab *tab)
   return ( pgid == -1 || pgid != tab->pid );
 }
 
+void termi_tab_set_title(TermiTab *tab, const gchar *title)
+{
+  //XXX truncate title if too long?
+  gtk_label_set_text(tab->lbl, title);
+}
+
 
 gchar *termi_get_cursor_uri(const TermiTab *tab, const GdkEventButton *ev)
 {
@@ -1114,8 +1122,8 @@ void termi_menu_set_tab_title_cb(TermiTab *tab, GtkMenuItem *item)
   g_signal_connect(G_OBJECT(entry), "changed", G_CALLBACK(termi_dlgtitle_entry_changed_cb), dlg);
 
   if( gtk_dialog_run(dlg) == GTK_RESPONSE_ACCEPT ) {
-    gtk_label_set_text(tab->lbl, gtk_entry_get_text(entry));
-    //XXX option local to the tab?
+    termi_tab_set_title(tab, gtk_entry_get_text(entry));
+    //TODO make this option local to the tab
     termi.force_tab_title = !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(check));
   }
 
@@ -1304,8 +1312,7 @@ void termi_tab_window_title_changed_cb(VteTerminal *vte, void *data)
 {
   if( !termi.force_tab_title ) {
     TermiTab *tab = termi_tab_from_vte(vte);
-    //XXX truncate title if too long?
-    gtk_label_set_text(tab->lbl, vte->window_title);
+    termi_tab_set_title(tab, vte->window_title);
   }
 }
 
@@ -1448,6 +1455,41 @@ gint termi_tab_get_index(TermiTab *tab)
 }
 
 
+typedef struct {
+  gchar *title;
+  gchar *command;
+} termi_opt_tab_t;
+
+typedef struct {
+  GArray *tabs;
+} termi_opt_data_t;
+
+void termi_opt_tab_free(gpointer data)
+{
+  termi_opt_tab_t *d = data;
+  g_free(d->title);
+  g_free(d->command);
+}
+
+gboolean termi_opt_tab_cb(const gchar *option_name, const gchar *value,
+                          gpointer data, GError **error)
+{
+  const gchar *sep = g_strstr_len(value, -1, "  ");
+  termi_opt_data_t *d = data;
+  termi_opt_tab_t tab;
+  if(sep == NULL) {
+    tab.title = NULL;
+    tab.command = g_strdup(value);
+  } else {
+    tab.title = g_strndup(value, sep-value);
+    tab.command = g_strdup(sep+2);
+  }
+  g_array_append_val(d->tabs, tab);
+  return TRUE;
+}
+
+
+
 int main(int argc, char *argv[])
 {
   gboolean opt_version = FALSE;
@@ -1460,10 +1502,18 @@ int main(int argc, char *argv[])
     { "title", 't', 0, G_OPTION_ARG_STRING, &opt_title, "Window title", NULL },
     { "version", 0, 0, G_OPTION_ARG_NONE, &opt_version, "Display version number", NULL },
     { "geometry", 0, 0, G_OPTION_ARG_STRING, &opt_geometry, "X geometry for the window", NULL },
+    { "tab", 0, 0, G_OPTION_ARG_CALLBACK, &termi_opt_tab_cb, "Create a tab; format is \"[tab-title  ]command\"", NULL },
     { NULL, 0, 0, 0, NULL, NULL, NULL }
   };
 
+  termi_opt_data_t opt_data = {
+    .tabs = g_array_new(FALSE, FALSE, sizeof(termi_opt_tab_t)),
+  };
+  g_array_set_clear_func(opt_data.tabs, termi_opt_tab_free);
+
   GOptionContext *opt_context = g_option_context_new("- mini terminal emulator");
+  GOptionGroup *opt_group = g_option_group_new(NULL, NULL, NULL, &opt_data, NULL);
+  g_option_context_set_main_group(opt_context, opt_group);
   g_option_context_add_main_entries(opt_context, opt_entries, NULL);
   g_option_context_add_group(opt_context, gtk_get_option_group(TRUE));
 
@@ -1495,13 +1545,33 @@ int main(int argc, char *argv[])
     g_free(opt_title);
   }
 
-  // create the first tab
-  TermiTab *tab = termi_tab_new(opt_execute);
-  if( tab == NULL ) {
-    termi_error("failed to create the first tab");
+  // create initial tabs
+  gboolean has_opt_tabs = opt_data.tabs->len > 0;
+  if(opt_execute || !has_opt_tabs) {
+    // "default" tab
+    TermiTab *tab = termi_tab_new(opt_execute);
+    if(tab == NULL) {
+      termi_error("failed to create default tab");
+    }
+    g_free(opt_execute);
   }
-  g_free(opt_execute);
+  if(has_opt_tabs) {
+    guint i;
+    for(i=0; i<opt_data.tabs->len; i++) {
+      termi_opt_tab_t *opt_tab = &g_array_index(opt_data.tabs, termi_opt_tab_t, i);
+      TermiTab *tab = termi_tab_new(opt_tab->command);
+      if(tab == NULL) {
+        termi_error("failed to create tab '%s'", opt_tab->title);
+      }
+      if(opt_tab->title != NULL) {
+        termi_tab_set_title(tab, opt_tab->title);
+      }
+    }
+  }
   termi_resize(80, 24);
+
+  // free opt_data
+  g_array_free(opt_data.tabs, TRUE);
 
   // set geometry (has to be done before showing the main window)
   if( opt_geometry != NULL ) {
@@ -1513,6 +1583,9 @@ int main(int argc, char *argv[])
 
   gtk_widget_show_all(GTK_WIDGET(termi.winmain));
 
+  // select first tab
+  TermiTab *tab = termi_tab_from_index(0);
+  termi_tab_focus(tab);
   //XXX:hack colors are not properly set for the first tab, it seems the window
   // has to ben realized first.
   // This may be fixed in newer versions of libvte.
