@@ -176,11 +176,12 @@ static void termi_resize(gint col, gint row);
 /** @brief Add a new tab.
  *
  * If \e cmd is NULL, run a shell.
+ * If \e cwd is NULL, use current tab's directory or the current directory.
  * The new tab will receive focus.
  *
  * @return the created tab or \e NULL.
  */
-static TermiTab *termi_tab_new(gchar *cmd);
+static TermiTab *termi_tab_new(gchar *cmd, const gchar *cwd);
 /** @brief Remove a tab.
  *
  * If removed tab is the current tab, focus will be transferred.
@@ -683,7 +684,7 @@ void termi_set_vte_colors(const GdkColor *fg, const GdkColor *bg, const GdkColor
 }
 
 
-TermiTab *termi_tab_new(gchar *cmd)
+TermiTab *termi_tab_new(gchar *cmd, const gchar *cwd)
 {
   TermiTab *tab = g_new0(TermiTab, 1);
   tab->vte = VTE_TERMINAL(vte_terminal_new());
@@ -716,15 +717,17 @@ TermiTab *termi_tab_new(gchar *cmd)
   }
 
   // get workding directory of the current tab, if any
-  gchar *wdir = NULL;
-  gint cur_index = gtk_notebook_get_current_page(termi.notebook);
-  if( cur_index != -1 ) {
-    TermiTab *cur_tab = termi_tab_from_index(cur_index);
-    g_assert( cur_tab->pid >= 0 );
-    gchar *p = g_strdup_printf("/proc/%d/cwd", cur_tab->pid);
-    if( p != NULL ) {
-      wdir = g_file_read_link(p, NULL); // ignore errors
-      g_free(p);
+  gchar *wdir = cwd ? g_strdup(cwd) : NULL;
+  if(wdir == NULL) {
+    gint cur_index = gtk_notebook_get_current_page(termi.notebook);
+    if( cur_index != -1 ) {
+      TermiTab *cur_tab = termi_tab_from_index(cur_index);
+      g_assert( cur_tab->pid >= 0 );
+      gchar *p = g_strdup_printf("/proc/%d/cwd", cur_tab->pid);
+      if( p != NULL ) {
+        wdir = g_file_read_link(p, NULL); // ignore errors
+        g_free(p);
+      }
     }
   }
 
@@ -1132,7 +1135,7 @@ void termi_menu_set_tab_title_cb(TermiTab *tab, GtkMenuItem *item)
 
 void termi_menu_new_tab_cb(TermiTab *tab, GtkMenuItem *item)
 {
-  termi_tab_new(NULL);
+  termi_tab_new(NULL, NULL);
 }
 
 void termi_menu_close_tab_cb(TermiTab *tab, GtkMenuItem *item)
@@ -1389,7 +1392,7 @@ void termi_dlgfind_entry_changed_cb(GtkEntry *entry, GtkDialog *dlg)
 
 
 
-void termi_kb_new_tab_cb(void)   { termi_tab_new(NULL); }
+void termi_kb_new_tab_cb(void)   { termi_tab_new(NULL, NULL); }
 void termi_kb_left_tab_cb(void)  { termi_tab_focus_rel(-1); }
 void termi_kb_right_tab_cb(void) { termi_tab_focus_rel(+1); }
 void termi_kb_prev_tab_cb(void)  { if( termi.prev_tab ) termi_tab_focus(termi.prev_tab); }
@@ -1457,6 +1460,7 @@ gint termi_tab_get_index(TermiTab *tab)
 
 typedef struct {
   gchar *title;
+  gchar *cwd;
   gchar *command;
 } termi_opt_tab_t;
 
@@ -1468,6 +1472,7 @@ void termi_opt_tab_free(gpointer data)
 {
   termi_opt_tab_t *d = data;
   g_free(d->title);
+  g_free(d->cwd);
   g_free(d->command);
 }
 
@@ -1475,18 +1480,29 @@ gboolean termi_opt_tab_cb(const gchar *option_name, const gchar *value,
                           gpointer data, GError **error)
 {
   const gchar *sep = g_strstr_len(value, -1, "  ");
+  const gchar *end = value + strlen(value);
   termi_opt_data_t *d = data;
-  termi_opt_tab_t tab;
+  termi_opt_tab_t tab = { NULL, NULL, NULL };
   if(sep == NULL) {
-    tab.title = NULL;
-    tab.command = g_strdup(value);
+    if(end > value) {
+      tab.command = g_strdup(value);
+    }
   } else {
-    tab.title = g_strndup(value, sep-value);
-    tab.command = g_strdup(sep+2);
-  }
-  if(!*tab.command) {
-    g_free(tab.command);
-    tab.command = NULL;
+    const gchar *sep2 = g_strstr_len(sep+2, -1, "  ");
+    if(sep2 == NULL) {
+      tab.title = g_strndup(value, sep-value);
+      if(end > sep+2) {
+        tab.command = g_strdup(sep+2);
+      }
+    } else {
+      tab.title = g_strndup(value, sep-value);
+      if(sep2 > sep+2) {
+        tab.cwd = g_strndup(sep+2, sep2-(sep+2));
+      }
+      if(end > sep2+2) {
+        tab.command = g_strdup(sep2+2);
+      }
+    }
   }
   g_array_append_val(d->tabs, tab);
   return TRUE;
@@ -1506,7 +1522,7 @@ int main(int argc, char *argv[])
     { "title", 't', 0, G_OPTION_ARG_STRING, &opt_title, "Window title", NULL },
     { "version", 0, 0, G_OPTION_ARG_NONE, &opt_version, "Display version number", NULL },
     { "geometry", 0, 0, G_OPTION_ARG_STRING, &opt_geometry, "X geometry for the window", NULL },
-    { "tab", 0, 0, G_OPTION_ARG_CALLBACK, &termi_opt_tab_cb, "Create a tab; format is \"[tab-title  ][command]\"", NULL },
+    { "tab", 0, 0, G_OPTION_ARG_CALLBACK, &termi_opt_tab_cb, "Create a tab; format is \"[tab-title  [cwd  ]][command]\"", NULL },
     { NULL, 0, 0, 0, NULL, NULL, NULL }
   };
 
@@ -1553,7 +1569,7 @@ int main(int argc, char *argv[])
   gboolean has_opt_tabs = opt_data.tabs->len > 0;
   if(opt_execute || !has_opt_tabs) {
     // "default" tab
-    TermiTab *tab = termi_tab_new(opt_execute);
+    TermiTab *tab = termi_tab_new(opt_execute, NULL);
     if(tab == NULL) {
       termi_error("failed to create default tab");
     }
@@ -1563,7 +1579,7 @@ int main(int argc, char *argv[])
     guint i;
     for(i=0; i<opt_data.tabs->len; i++) {
       termi_opt_tab_t *opt_tab = &g_array_index(opt_data.tabs, termi_opt_tab_t, i);
-      TermiTab *tab = termi_tab_new(opt_tab->command);
+      TermiTab *tab = termi_tab_new(opt_tab->command, opt_tab->cwd);
       if(tab == NULL) {
         termi_error("failed to create tab '%s'", opt_tab->title);
       }
