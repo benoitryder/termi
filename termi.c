@@ -1484,6 +1484,10 @@ gboolean termi_opt_tab_cb(const gchar *option_name, const gchar *value,
     tab.title = g_strndup(value, sep-value);
     tab.command = g_strdup(sep+2);
   }
+  if(!*tab.command) {
+    g_free(tab.command);
+    tab.command = NULL;
+  }
   g_array_append_val(d->tabs, tab);
   return TRUE;
 }
@@ -1502,7 +1506,7 @@ int main(int argc, char *argv[])
     { "title", 't', 0, G_OPTION_ARG_STRING, &opt_title, "Window title", NULL },
     { "version", 0, 0, G_OPTION_ARG_NONE, &opt_version, "Display version number", NULL },
     { "geometry", 0, 0, G_OPTION_ARG_STRING, &opt_geometry, "X geometry for the window", NULL },
-    { "tab", 0, 0, G_OPTION_ARG_CALLBACK, &termi_opt_tab_cb, "Create a tab; format is \"[tab-title  ]command\"", NULL },
+    { "tab", 0, 0, G_OPTION_ARG_CALLBACK, &termi_opt_tab_cb, "Create a tab; format is \"[tab-title  ][command]\"", NULL },
     { NULL, 0, 0, 0, NULL, NULL, NULL }
   };
 
