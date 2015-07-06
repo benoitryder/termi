@@ -1488,14 +1488,15 @@ gboolean termi_opt_tab_cb(const gchar *option_name, const gchar *value,
       tab.command = g_strdup(value);
     }
   } else {
+    if(sep > value) {
+      tab.title = g_strndup(value, sep-value);
+    }
     const gchar *sep2 = g_strstr_len(sep+2, -1, "  ");
     if(sep2 == NULL) {
-      tab.title = g_strndup(value, sep-value);
       if(end > sep+2) {
         tab.command = g_strdup(sep+2);
       }
     } else {
-      tab.title = g_strndup(value, sep-value);
       if(sep2 > sep+2) {
         tab.cwd = g_strndup(sep+2, sep2-(sep+2));
       }
