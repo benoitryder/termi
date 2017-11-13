@@ -78,6 +78,7 @@ typedef struct {
   gboolean save_conf_at_exit;
   gboolean show_single_tab;  ///< Show the tabbar even when there is only one tab.
   gboolean force_tab_title;  ///< Terminal is not allowed to change tab title.
+  gboolean adjust_tab_title_width;  ///< Tab titles are ellispized and use full tab bar width.
   gboolean audible_bell;
   gboolean visible_bell;
   gboolean blink_mode;  // note: don't support the 3-state mode, on purpose
@@ -375,6 +376,7 @@ void termi_conf_load(void)
   termi.save_conf_at_exit = termi_conf_load_bool(TERMI_CFGGRP_GENERAL, "SaveConfAtExit", TRUE);
   termi.show_single_tab = termi_conf_load_bool(TERMI_CFGGRP_GENERAL, "ShowSingleTab", FALSE);
   termi.force_tab_title = termi_conf_load_bool(TERMI_CFGGRP_GENERAL, "ForceTabTitle", FALSE);
+  termi.adjust_tab_title_width = termi_conf_load_bool(TERMI_CFGGRP_GENERAL, "AdjustTabTitleWidth", FALSE);
   termi.audible_bell = termi_conf_load_bool(TERMI_CFGGRP_GENERAL, "AudibleBell", FALSE);
   termi.visible_bell = termi_conf_load_bool(TERMI_CFGGRP_GENERAL, "VisibleBell", FALSE);
   termi.blink_mode = termi_conf_load_bool(TERMI_CFGGRP_GENERAL, "BlinkMode", FALSE);
@@ -425,7 +427,8 @@ void termi_conf_load(void)
   gint npages = gtk_notebook_get_n_pages(termi.notebook);
   gint i;
   for( i=0; i<npages; i++ ) {
-    VteTerminal *vte = VTE_TERMINAL(gtk_notebook_get_nth_page(termi.notebook, i));
+    TermiTab *tab = termi_tab_from_index(i);
+    VteTerminal *vte = tab->vte;
     vte_terminal_set_audible_bell(vte, termi.audible_bell);
     vte_terminal_set_visible_bell(vte, termi.visible_bell);
     vte_terminal_set_cursor_blink_mode(vte, termi.blink_mode ? VTE_CURSOR_BLINK_ON : VTE_CURSOR_BLINK_OFF);
@@ -434,6 +437,13 @@ void termi_conf_load(void)
 #if VTE_CHECK_VERSION(0,26,0)
     vte_terminal_search_set_wrap_around(vte, termi.search_wrap);
 #endif
+    if(termi.adjust_tab_title_width) {
+      gtk_label_set_ellipsize(tab->lbl, PANGO_ELLIPSIZE_END);
+      gtk_container_child_set(GTK_CONTAINER(termi.notebook), GTK_WIDGET(tab->vte), "tab-expand", TRUE, NULL);
+    } else {
+      gtk_label_set_ellipsize(tab->lbl, PANGO_ELLIPSIZE_NONE);
+      gtk_container_child_set(GTK_CONTAINER(termi.notebook), GTK_WIDGET(tab->vte), "tab-expand", FALSE, NULL);
+    }
   }
   if( npages == 1 ) {
     gtk_notebook_set_show_tabs(termi.notebook, termi.show_single_tab);
@@ -450,6 +460,7 @@ void termi_conf_save(void)
   g_key_file_set_boolean(termi.cfg, TERMI_CFGGRP_GENERAL, "SaveConfAtExit", termi.save_conf_at_exit);
   g_key_file_set_boolean(termi.cfg, TERMI_CFGGRP_GENERAL, "ShowSingleTab", termi.show_single_tab);
   g_key_file_set_boolean(termi.cfg, TERMI_CFGGRP_GENERAL, "ForceTabTitle", termi.force_tab_title);
+  g_key_file_set_boolean(termi.cfg, TERMI_CFGGRP_GENERAL, "AdjustTabTitleWidth", termi.adjust_tab_title_width);
   g_key_file_set_boolean(termi.cfg, TERMI_CFGGRP_GENERAL, "AudibleBell", termi.audible_bell);
   g_key_file_set_boolean(termi.cfg, TERMI_CFGGRP_GENERAL, "VisibleBell", termi.visible_bell);
   g_key_file_set_boolean(termi.cfg, TERMI_CFGGRP_GENERAL, "BlinkMode", termi.blink_mode);
@@ -702,6 +713,10 @@ TermiTab *termi_tab_new(gchar *cmd, const gchar *cwd)
     gtk_widget_destroy(GTK_WIDGET(tab->vte));
     g_free(tab);
     return NULL;
+  }
+  if(termi.adjust_tab_title_width) {
+    gtk_label_set_ellipsize(tab->lbl, PANGO_ELLIPSIZE_END);
+    gtk_container_child_set(GTK_CONTAINER(termi.notebook), GTK_WIDGET(tab->vte), "tab-expand", TRUE, NULL);
   }
 
   // split shell command, if any
